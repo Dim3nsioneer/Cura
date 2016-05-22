@@ -1,4 +1,4 @@
-#Name: Tweak At Z 4.0.2
+#Name: Tweak At Z 4.0.4
 #Info: Change printing parameters at a given height
 #Help: TweakAtZ
 #Depend: GCode
@@ -44,7 +44,9 @@
 ##        uses previous value from other plugins also on UltiGCode
 ##V4.0.1: Bugfix for doubled G1 commands
 ##V4.0.2: uses Cura progress bar instead of its own
-version = '4.0.2'
+##V4.0.3: added coolheadlift support, also added support for tweaks at first (0) layer
+##V4.0.4: Bugfix for fall back after one layer and doubled G0 commands when using print speed tweak
+version = '4.0.4'
 
 import re
 import wx
@@ -139,7 +141,7 @@ with open(filename, "w") as file:
 		if ';Layer count:' in line:
 			TWinstances += 1
 			file.write(';TweakAtZ instances: %d\n' % TWinstances)
-		if not ('M84' in line or 'M25' in line or ('G1' in line and TweakPrintSpeed and state==3) or
+		if not ('M84' in line or 'M25' in line or ('G1' in line and TweakPrintSpeed and (state==3 or state==4)) or
 						';TweakAtZ instances:' in line):
 			file.write(line)
 		IsUM2 = ('FLAVOR:UltiGCode' in line) or IsUM2 #Flavor is UltiGCode!
@@ -153,13 +155,14 @@ with open(filename, "w") as file:
 			TWinstances = tempTWi
 		if ';Small layer' in line: #checks for begin of Cool Head Lift
 			old['state'] = state
-			state = 0
-		#if ('G4' in line) and old['state'] > -1:
-		#old['state'] = -1
+			state = 0	
 		if ';LAYER:' in line: #new layer no. found
+			if state == 0:
+				state = old['state']
 			layer = getValue(line, ';LAYER:', layer)
 			if targetL_i > -100000: #target selected by layer no.
-				if state == 2 and layer >= targetL_i: #determine targetZ from layer no.
+				if (state == 2 or targetL_i == 0) and layer == targetL_i: #determine targetZ from layer no.; checks for tweak on layer 0
+					state = 2
 					targetZ = z + 0.001
 		if (getValue(line, 'T', None) is not None) and (getValue(line, 'M', None) is None): #looking for single T-cmd
 			pres_ext = getValue(line, 'T', pres_ext)
@@ -193,9 +196,9 @@ with open(filename, "w") as file:
 			y = getValue(line, 'Y', None)
 			e = getValue(line, 'E', None)
 			f = getValue(line, 'F', None)
-			if TweakPrintSpeed and state==3:
+			if 'G1' in line and TweakPrintSpeed and (state==3 or state==4):
 				# check for pure print movement in target range:
-				if 'G1' in line and x != None and y != None and f != None and e != None and newZ==z:
+				if x != None and y != None and f != None and e != None and newZ==z:
 					file.write("G1 F%d X%1.3f Y%1.3f E%1.5f\n" % (int(f/100.0*float(printspeed)),getValue(line,'X'),
 																  getValue(line,'Y'),getValue(line,'E')))
 				else: #G1 command but not a print movement
@@ -240,25 +243,24 @@ with open(filename, "w") as file:
 								file.write(";TweakAtZ V%s: reset on Layer %d\n" % (version,layer))
 							else:
 								file.write(";TweakAtZ V%s: reset at %1.2f mm\n" % (version,z))
-							if not oldValueUnknown:
-								if not IsUM2:#executes only for UM Original and UM2 with RepRap flavor
-									for key in TweakProp:
-										if TweakProp[key]:
-											file.write(TweakStrings[key] % float(old[key]))
-								else: #executes on UM2 with Ultigcode
-									file.write("M606 S%d;recalls saved settings\n" % (TWinstances-1))
+							if IsUM2 and oldValueUnknown: #executes on UM2 with Ultigcode and machine setting
+								file.write("M606 S%d;recalls saved settings\n" % (TWinstances-1))
+							else: #executes on RepRap, UM2 with Ultigcode and Cura setting
+								for key in TweakProp:
+									if TweakProp[key]:
+										file.write(TweakStrings[key] % float(old[key]))
 				# re-activates the plugin if executed by pre-print G-command, resets settings:
-				if z < targetZ and state >= 3:
+				if (z < targetZ or layer == 0) and state >= 3: #resets if below tweak level or at level 0
 					state = 2
 					done_layers = 0
 					if targetL_i > -100000:
 						file.write(";TweakAtZ V%s: reset below Layer %d\n" % (version,targetL_i))
 					else:
 						file.write(";TweakAtZ V%s: reset below %1.2f mm\n" % (version,targetZ))
-					if not IsUM2: #executes only for UM Original and UM2 with RepRap flavor
+					if IsUM2 and oldValueUnknown: #executes on UM2 with Ultigcode and machine setting
+						file.write("M606 S%d;recalls saved settings\n" % (TWinstances-1))
+					else: #executes on RepRap, UM2 with Ultigcode and Cura setting
 						for key in TweakProp:
 							if TweakProp[key]:
 								file.write(TweakStrings[key] % float(old[key]))
-					else:
-						file.write("M606 ;recalls saved settings\n")
 		i+=1
